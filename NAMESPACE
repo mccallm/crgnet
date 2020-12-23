@@ -1,0 +1,8 @@
+importFrom(utils, citation, toBibtex)
+importClassesFrom(methods, character, matrix)
+importMethodsFrom(methods, initialize)
+importFrom(methods, is, callNextMethod, new, setAs, as)
+importFrom(limma, squeezeVar, fitFDistRobustly)
+
+exportPattern("^[^\\.]")
+

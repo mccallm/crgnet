@@ -1,0 +1,283 @@
+---
+title: "Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes"
+author: "[Matthew N. McCall](http://mnmccall.com)"
+date: "`r Sys.Date()`"
+vignette: >
+  %\VignetteIndexEntry{Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}  
+output: html_document
+---
+
+
+```{r global_options, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(fig.width=12, fig.height=8,
+                      warning=FALSE, message=FALSE)
+```
+
+# Introduction
+
+In this vignette we reproduce the analyses and results described in *Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes.* This package begins with a SummarizedExperiment object containing the raw qPCR Ct values from a series of perturbation experiments and corresponding control experiments. Each step in the analysis is briefly described and carried out by one or more functions implemented in this package. Each of these functions has its own help file describing it in detail; here we focus on the analysis as a whole. To avoid any confusion due to naming conventions (qPCR-based expression estimates have been called Ct values, Crt values, and Cq values to name a few), we refer to the reported Ct values as *expression estimates* or simply *expression*.
+
+# Experimental Design
+The current data consists of 66 genes (including one house keeping
+gene Becn1) measured across 152 samples -- 40 controls and 112
+perturbations.
+
+# Data Import and Exploration
+We first load the package and data.
+
+```{r load_crgnet}
+library('crgnet')
+```
+
+```{r load_raw_data}
+data("crgdata")
+```
+
+The Ct values from each of the samples and corresponding annotation are stored in a SummarizedExperiment object:
+
+```{r data_explore}
+show(crgdata)
+str(assay(crgdata, "ct"))
+colData(crgdata)
+```
+
+The colData contains sample annotation, including the batch in which the experiment was performed, which gene(s) were perturbed, and the direction of perturbation. 
+
+## Technical variability between samples and Becn1 as a control gene
+We begin by examining the distribution of expression in each of the 40 controls. 
+
+```{r ctl_boxplots}
+controlSamples <- assay(crgdata,1)[,which(is.na(colData(crgdata)$pGene1))]
+boxplot(controlSamples, xaxt="n", xlab="Control Samples")
+becn1 <- controlSamples[rownames(controlSamples)=="Becn1",]
+points(becn1, pch=20, col="red")
+legend("bottom", pch=20, col="red", "Becn1")
+```
+
+Note that there is substantial variability in the distribution of expression across control samples. While some variability might be ascribed to the different control vectors, it is unlikely that the effect would be of this magnitude and consistency. Moreover, note that while there is substantial variability in the location of the expression distribution across control samples, the range (e.g. IQR) remains relatively constant (with a few exceptions). The house-keeping gene, Becn1, appears to track the lower quantile of the distribution of expression across the controls reasonably well. This suggests that normalizing to this house-keeping gene may perform well in these data. 
+
+```{r ctl_boxplots_norm}
+normFactor <- becn1 - mean(becn1)
+controlSamplesNormalized <- controlSamples - rep(normFactor, each=nrow(controlSamples))
+boxplot(controlSamplesNormalized, xaxt="n", xlab="Control Samples Normalized")
+```
+
+The distribution of expression in the Becn1 normalized control samples, does appear to be more consistent across samples. It is unclear whether the remaining variability is due to the use of different vector controls, technical variability, or biological variability.
+
+We can further examine the suitability of Becn1 for normalization by looking at the median absolute deviation (MAD) vs median expression. 
+```{r ctl_mad_vs_median}
+controlMedians <- apply(controlSamples, 1, median)
+controlMADs <- apply(controlSamples, 1, mad)
+plot(x=controlMedians, y=controlMADs, pch=20, ylab="MAD", xlab="Median")
+ind <- which(rownames(controlSamples)=="Becn1")
+points(x=controlMedians[ind], y=controlMADs[ind], pch=20, col="red")
+text(x=controlMedians[ind], y=controlMADs[ind], "Becn1", pos=4)
+```
+
+Becn1 has relatively low variability across the control samples compared to the other genes. Overall, it appears that Becn1 normalization does seem to account for much of the technical variability across samples. We will use Becn1 to normalize the data in the following section. 
+
+# Non-detect imputation and normalization
+As previously reported in other data sets, we observed a strong dependency between the proportion of non-detects (those reactions failing to produce fluorescence values above a certain threshold) and the average observed expression value. Non-detects were treated as non-random missing data and imputed using the R/Bioconductor package nondetects (McCall et al. 2014). 
+
+## Model preparation
+We begin by examining the relationship between the proportion of non-detects and average expression in these data. 
+```{r model_prep_L1}
+crgprepL1 <- model_prep(crgdata, plot=TRUE)
+```
+Additionally, the model_prep function converts the data to the qPCRset object format needed to impute the non-detects and returns normalization factors. Specifically, the *sampleType* field of the sample annotation contains a unique description of each experiment: which gene(s) were perturbed and the direction of perturbation. This is used to define replicates for use in the imputation. 
+
+## Non-detect imputation
+We use the qpcrImpute function from the nondetects package to do the imputation. This replaces missing values (non-detects) with an imputed values based on an estimated missing data mechanism as well as the expression values seen in replicate experiments. This function takes a while to run, so the resulting data object is stored in this package and the following code is not actually evaluated in this vignette.
+```{r model_L1, eval=FALSE}
+library(nondetects)
+crgdataImputed <- qpcrImpute(crgprepL1$object, groupVars="sampleType")
+```
+To load the presaved results, we run the following:
+```{r load_imputed}
+data(crgdataImputed)
+```
+
+## Normalization
+We now use a function from the HTqPCR package to normalize the data to the house-keeping gene, Becn1. After normalization, we have lost the cycle thrshold (Ct) interpretation but retained the inverse relationship between expression values and the amount of transcript in the sample. Therefore, we consider the negative $\Delta$Ct value as our measure of normalized expression.
+```{r normalize, results="hide"}
+library(HTqPCR)
+crgdataNorm <- normalizeCtData(crgdataImputed, deltaCt.genes="Becn1")
+exprs(crgdataNorm) <- -exprs(crgdataNorm)
+```
+
+# Response to perturbation
+In the previous sections we have dealt with non-detects (missing values) and normalized the data. We now turn out attention to assessing which genes are up- or down-regulated in response to each perturbation. 
+
+## Check matched controls
+First, we examine whether a given perturbed sample is more similar to the control sample from the same batch then to control samples from other batches. If there is no difference between batches, then we can compare each perturbed sample to all of the control samples. However, if there is a batch-effect, it is advantageous to compare each perturbed sample to the control sample from the same batch. 
+
+```{r check_matched_controls}
+check_matched_controls(crgdataNorm)
+```
+
+In almost all cases, the control sample from the same batch is the most similar to the perturbed sample. This suggests that there is a difference between batches and motivates the calculation of $\Delta\Delta$Ct values as our measure of normalized change in expression in response to each perturbation.
+
+## Calculate $\Delta\Delta$Ct values
+We calculate $\Delta\Delta$Ct values by computing the difference in expression between each perturbed sample and its corresponding control sample from the same batch.
+```{r calculate_ddCt}
+ddCt <- calculate_ddCt(crgdataNorm)
+```
+
+## Examine residuals
+One final check of the non-detect imputation procedure from before is to examine the distribution of residuals stratified by the presence of imputed non-detect values. These can exist in either the perturbed sample, the control sample, or both samples. 
+```{r examine_residuals}
+resids <- examine_residuals(ddCt, plot=TRUE)
+```
+Here, we see what one would expect: a median of zero and roughly equal spread when there are no non-detects, a median slightly below zero when there is a non-detect in only the perturbed sample, and a median slightly above zero when there is a non-detect in only the control sample. 
+  
+## Probability of up- or down-regulation
+In order to incorporate uncertainty into subsequent analyses, we estimate the probailitity that a gene is up- / down-regulated in response to each perturbation. We begin by calculating approximate z-scores for each perturbation:
+```{r calculate_zscores}
+zscores <- calculate_zscores(ddCt[-which(rownames(ddCt)=="Becn1"),])
+```
+
+Next we calculate the probability of up- / down-regulated in response to each perturbation by fitting a uniform / normal / uniform mixture model. This approach is similar to the probability of expression (POE) algorithm. 
+```{r calculate_probs}
+probabilities <- calculate_probs(zscores)
+```
+
+## Filter unperturbed genes
+We now filter those genes that were measured but are not perturbed in any experiment. While these genes were useful in modeling the missing data mechanism for non-detect imputation and estimating probailities of up- / down-regulation, they will not be used in the subsequent network modeling and can be removed at this point. 
+```{r filter_unperturbed_genes}
+probabilities <- probabilities[-which(!rownames(probabilities)%in%gsub(":.+","",colnames(probabilities))), ]
+```
+
+Finally, we remove the six perturbation experiments that are not a single perturbation back to normal expression levels and format the probabilities for input to the network model fitting algorithm:
+```{r format_network_input}
+networkInputData <- format_network_input(probabilities[,-c(1,9,12,13,20,23)])
+```
+
+Both the z-scores and network input data objects are stored in this package as data objects. 
+
+## Connectivity graph
+Either the z-scores or probabilities could be thresholded to produce a connectivity graph. Here we show how to create a connectivity graph based on the probabilities used as inputs to the network modeling. We begin by showing the matrix of probabilities. Positive values denote up-regulation; negative values denote down-regulation.
+```{r connectivity_table}
+probs <- networkInputData$ssObj
+colnames(probs) <- rownames(probs)
+kable(round(probs,2))
+```
+
+To create a connectivity graph, we define a connection by thresholding the probabilities at an absolute value of 0.5. 
+```{r connectivity_graph_threshold}
+probs[which(abs(probs)<0.5, arr.ind=TRUE)] <- 0
+diag(probs) <- 0
+```
+
+Next we use the *network* package to create and plot the connectivity graph. We also add data on tumor inhibition and direction of response
+```{r connectivity_graph}
+library(network)
+cgraph <- network(t(probs), matrix.type="adjacency", ignore.eval=FALSE, names.eval="probs")
+data("tumor_inhibition")
+set.vertex.attribute(cgraph, "tumor_inhibition", tumor_inhibition$TumorEffect)
+set.edge.attribute(cgraph, "direction", sign(get.edge.attribute(cgraph,"probs")))
+plot(cgraph, displaylabels=TRUE, mode="circle", boxed.labels=TRUE,
+     label.bg=ifelse(get.vertex.attribute(cgraph, "tumor_inhibition")=="Smaller", "yellow", "grey"),
+     edge.col=ifelse(get.edge.attribute(cgraph, "direction")==1, "red", "blue"))
+legend("topleft", c("Tumor Inhibitory", "Not Tumor Inhibitory"), title="Node Color",
+       fill=c("yellow","grey"))
+legend("topright", c("Up-regulation", "Down-regulation"), title="Edge Color",
+       col=c("red","blue"), lty=1, lwd=5)
+```
+
+
+# Network modeling
+To assess the interdependence between these 20 CRGs, we use a ternary network model that accounts for the dynamic nature of gene regulatory networks and facilitates the evaluation uncertainty. The current methodology builds upon the modeling framework proposed in Almudevar et al. SAGMB 2011. Specifically, we assume that changes in gene expression can be modeled by one of three states – down-regulation (-1), baseline expression (0), or up-regulation (+1) – and that the state of the genes in the network at time *t+1* is a deterministic transition function of the state of the genes in the network at time *t*. This implies that from any initial state, the network will eventually reach a set of states that will repeat infinitely often, called an attractor.
+
+Given a set of transition functions that define a network, one can easily compute the attractor for a given perturbation and assess the compatibility of that attractor with the observed steady state data. There are often many network structures that fit the observed data equally well, and the model space is huge (for the network model presented in this manuscript there are approximately 2.48×10^763 potential networks. Therefore, we use a parallel tempering algorithm (Swendsen and Wang 1986) to search the model space for networks that produce attractors that are most similar to the observed steady state data. 
+
+Unlike previous approaches, here we have incorporated uncertainty in the differential expression estimates via probabilities of up- / down-regulation. This allows the network model to give more weight to data points with higher certainty. Additionally, the ability to produce non-integer network scores eased transitions between network models and significantly decreased computational time. 
+
+Results presented in this manuscript are based on 100 independent network fits each run for 1,000,000,000 cycles in parallel across 20 processors with temperatures ranging from 0.001 to 1. The code used to produce these network fits is shown below: 
+
+```{r network_fit_example, eval=FALSE}
+library("pfit")
+ind.arr <- as.integer(commandArgs(trailingOnly=TRUE)[1])
+load("scores.rda")
+results <- parallelFit(experiment_set=scores,
+                       max_parents=4,
+                       n_cycles=1000000000,
+                       n_write=10,
+                       T_lo=0.001,
+                       T_hi=1,
+                       target_score=0,
+                       n_proc=20,
+                       logfile=paste0("tnet-fit-",ind.arr,".log"),
+                       seed=as.integer(ind.arr+112358)
+)
+```
+
+The computational resources required to generate these network models makes in infeasible for the code to be run in this vignette. In fact the results presented in this manuscript required several weeks to generate running on the University of Rochester high performance computing cluster. However, the fits are all stored in this package for ease of use, and the source code used to generate these objects will be available in the next version of the **ternarynet** R/Bioconductor package. 
+
+# Network summaries and vizualization
+Summary statistics can be computed by calculating the proportion of networks in which a given feature or features are present. One can also examine the transition functions, attractors, and trajectories all stored in the *fits* object. 
+
+## Topology
+One of the most common ways to visualize a network model is to present the topology. Here we calculate proportion of networks in which a given gene is a parent of another given gene. 
+
+```{r topology}
+data(networkInputData)
+data(networkFits)
+topo <- topology(fits)
+rownames(topo) <- colnames(topo) <- rownames(networkInputData$ssObj)
+kable(topo)
+```
+
+We exported this information to Cytoscape to create the graphical representation of these results shown in the manuscript. 
+
+# Signficance of a good model fit
+One question of interest is whether it is significant that one can obtain a low scoring network model. We examined this by permuting the network input data. For each gene, we permuted its response to all of the experiments. This retains the number of experiments to which each gene responds. In other words, the number of parents in a connectivity graph remains constant but which other genes are parents changes. We then fit a network model to the permuted data using the same parameters as above. We repeated this process 250 times.
+
+We can now compare the network scores from the real data and the permuted data. The permuted data network scores are shown as a histogram with the real data network scores denoted with tick marks on the x-axis. 
+```{r permuted_comparison}
+data(networkFits)
+data(permutedNetworkFits)
+real_scores <- sapply(fits, function(x) x$unnormalized_score)
+permuted_scores <- sapply(pfits, function(x) x$unnormalized_score)
+hist(permuted_scores, breaks=25, main="", xlab="Network Scores")
+rug(real_scores, lwd=3)
+```
+
+The network scores based on the real data are less than nearly all the scores based on the permuted data (empirical p-value $\leq 0.01$). With the current network constraints, we can obtain good scores for the real data but not for the permuted data. This suggests that we are not extensively overfitting these data and that the current network constraints are reasonable. 
+
+# In-degree comparisons
+We now examine whether we could obtain similar fits with a simpler network model. Specifically, can we reduce the number of parents (in-degree) and still fit the observed data reasonably well. To investigate this, we reran the network modeling algorithm with the *max_parents* reduced from 4 to 3. We also considered a more complex model by increasing the *max_parents* parameter to 5. We ran both of these models on permuted data as well.
+
+```{r indeg3_comparison}
+data(networkFits)
+data(networkFitsIndeg3)
+data(networkFitsIndeg5)
+indeg4_scores <- sapply(fits, function(x) x$unnormalized_score)
+indeg3_scores <- sapply(fits3, function(x) x$unnormalized_score)
+indeg5_scores <- sapply(fits5, function(x) x$unnormalized_score)
+data(permutedNetworkFits)
+data(permutedNetworkFitsIndeg3)
+data(permutedNetworkFitsIndeg5)
+indeg4_permuted_scores <- sapply(pfits, function(x) x$unnormalized_score)
+indeg3_permuted_scores <- sapply(pfits3, function(x) x$unnormalized_score)
+indeg5_permuted_scores <- sapply(pfits5, function(x) x$unnormalized_score)
+plot(x=jitter(rep(c(1:6), c(length(indeg3_scores), length(indeg3_permuted_scores),
+                            length(indeg4_scores), length(indeg4_permuted_scores),
+                            length(indeg5_scores), length(indeg5_permuted_scores)))),
+     y=c(indeg3_scores, indeg3_permuted_scores, indeg4_scores, indeg4_permuted_scores, 
+         indeg5_scores, indeg5_permuted_scores),
+     ylab="Network Score", xlab="", xaxt="n"
+     )
+axis(1, line=1.5, at=c(1.5,3.5,5.5), labels = c("In-degree 3", "In-degree 4", "In-degree 5"), 
+     tick=FALSE, cex.axis=1.25)
+axis(1, at=c(1:6), labels = rep(c("Real", "Permuted"), 3))
+```
+
+Increasing the in-degree cap from 3 to 4 results in a sizeable reduction in the model score; however, increasing the in-degree cap to 5 produces only a modest improvement (the in-degree 4 network models already do quite well). Regardless of the in-degree cap, better scores were achieving using the real data (as expected). The separation between real and permuted scores is greatest for an in-degree cap of 4. This lends further support to the choice of a maximum in-degree of four for these data. 
+
+# Session Info
+```{r session_info}
+sessionInfo()
+```
