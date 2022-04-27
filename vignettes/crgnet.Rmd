@@ -1,12 +1,12 @@
 ---
-title: "Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes"
-author: "[Matthew N. McCall](http://mnmccall.com)"
+title: Gene network modeling via TopNet reveals functional dependencies between diverse
+  tumor-critical mediator genes
+author: '[Matthew N. McCall](http://mnmccall.com)'
 date: "`r Sys.Date()`"
-vignette: >
-  %\VignetteIndexEntry{Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes}
-  %\VignetteEngine{knitr::rmarkdown}
-  %\VignetteEncoding{UTF-8}  
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
 ---
 
 
@@ -195,13 +195,18 @@ Given a set of transition functions that define a network, one can easily comput
 
 Unlike previous approaches, here we have incorporated uncertainty in the differential expression estimates via probabilities of up- / down-regulation. This allows the network model to give more weight to data points with higher certainty. Additionally, the ability to produce non-integer network scores eased transitions between network models and significantly decreased computational time. 
 
+Recently, we have updating the network modeling algorithm to allow more flexible scoring; however, this requires a different format for the network input data. Here, we convert the old network input data format to the new format:
+```{r format_network_input_scores}
+crgnet_scores <- format_network_input_scores(networkInputData)
+```
+
 Results presented in this manuscript are based on 100 independent network fits each run for 1,000,000,000 cycles in parallel across 20 processors with temperatures ranging from 0.001 to 1. The code used to produce these network fits is shown below: 
 
 ```{r network_fit_example, eval=FALSE}
-library("pfit")
+library("ternarynet")
 ind.arr <- as.integer(commandArgs(trailingOnly=TRUE)[1])
-load("scores.rda")
-results <- parallelFit(experiment_set=scores,
+data(crgnet_scores)
+results <- parallelFit(experiment_set=crgnet_scores,
                        max_parents=4,
                        n_cycles=1000000000,
                        n_write=10,
@@ -214,7 +219,7 @@ results <- parallelFit(experiment_set=scores,
 )
 ```
 
-The computational resources required to generate these network models makes in infeasible for the code to be run in this vignette. In fact the results presented in this manuscript required several weeks to generate running on the University of Rochester high performance computing cluster. However, the fits are all stored in this package for ease of use, and the source code used to generate these objects will be available in the next version of the **ternarynet** R/Bioconductor package. 
+The computational resources required to generate these network models makes in infeasible for the code to be run in this vignette. In fact the results presented in this manuscript required several weeks to generate running on the University of Rochester high performance computing cluster. However, the fits are all stored in this package for ease of use, and the source code used to generate these objects is available in the **ternarynet** R/Bioconductor package. 
 
 # Network summaries and vizualization
 Summary statistics can be computed by calculating the proportion of networks in which a given feature or features are present. One can also examine the transition functions, attractors, and trajectories all stored in the *fits* object. 
@@ -276,6 +281,97 @@ axis(1, at=c(1:6), labels = rep(c("Real", "Permuted"), 3))
 ```
 
 Increasing the in-degree cap from 3 to 4 results in a sizeable reduction in the model score; however, increasing the in-degree cap to 5 produces only a modest improvement (the in-degree 4 network models already do quite well). Regardless of the in-degree cap, better scores were achieving using the real data (as expected). The separation between real and permuted scores is greatest for an in-degree cap of 4. This lends further support to the choice of a maximum in-degree of four for these data. 
+
+# Comparison between network models generated using different in-degree thresholds
+Here we consider the effect of the maximum in-degree on the resulting network topology. Note that a larger in-degree threshold will produce a network with more edges. Of primary interest is whether the high confidence edges are retained for varying in-degrees. 
+```{r indeg_network_comparison}
+data(networkFits)
+data(networkFitsIndeg3)
+data(networkFitsIndeg5)
+topo_i4 <- topology(fits)
+topo_i3 <- topology(fits3)
+topo_i5 <- topology(fits5)
+rownames(topo_i3) <- colnames(topo_i3) <- 
+  rownames(topo_i4) <- colnames(topo_i4) <- 
+  rownames(topo_i5) <- colnames(topo_i5) <- rownames(networkInputData$ssObj)
+par(mfrow=c(1,2))
+plot(x=topo_i4, y=topo_i3, pch=20, 
+     xlab="In-degree 4 edge proportions",
+     ylab="In-degree 3 edge proportions",
+     main=paste0("Correlation = ", round(cor(as.vector(topo_i3), as.vector(topo_i4)), digits = 2)))
+abline(v=0.8)
+plot(x=topo_i4, y=topo_i5, pch=20, 
+     xlab="In-degree 4 edge proportions",
+     ylab="In-degree 5 edge proportions",
+     main=paste0("Correlation = ", round(cor(as.vector(topo_i4), as.vector(topo_i5)), digits = 2)))
+abline(v=0.8)
+```
+
+# Comparison with historical data processing
+## Normalization
+To compare the results of our analysis approach to early methods of network scoring, we reproduce earlier methods of data processing here. We resume a function from the HTqPCR package to normalize the data to the house-keeping gene, Becn1. After normalization, we have lost the cycle thrshold (Ct) interpretation but retained the inverse relationship between expression values and the amount of transcript in the sample. Therefore, we consider the negative $\Delta$Ct value as our measure of normalized expression.
+```{r normalize_old, results="hide"}
+library(HTqPCR)
+crgdataNorm_old <- normalizeCtData(crgprepL1$object, deltaCt.genes="Becn1")
+exprs(crgdataNorm_old) <- -exprs(crgdataNorm_old)
+ddCt_old <- calculate_ddCt(crgdataNorm_old)
+```
+
+Calculate t-test p-values to assess differential expression in response to perturbation.
+```{r calc_ttests, results="hide"}
+ttests_pval_old <- t(apply(assay(ddCt_old), 1, function(d){
+  by(d, ddCt_old$sampleType, function(x) t.test(x)$p.value)
+  }))
+tstats_old <- t(apply(assay(ddCt_old), 1, function(d){
+  by(d, ddCt_old$sampleType, function(x) t.test(x)$statistic)
+  }))
+```
+
+Filter to the core genes and calculate t-test statistics and p-values. 
+```{r filter_old_data, results="hide"}
+perts <- colnames(probabilities)[-c(1,9,12,13,20,23)]
+ttests_pval_old <- ttests_pval_old[rownames(probabilities), perts] 
+tstats_old <- tstats_old[rownames(probabilities), perts] 
+```
+
+Convert to discrete expression change calls for network modeling and format for input to network modeling.
+```{r format_for_network_old, results="hide"}
+diff_exprs_old <- sign(tstats_old)
+scores_old <- list()
+pvalues <- c(0.05, 0.1, 0.15, 0.2)
+for(k in seq_along(pvalues)){
+  tmp <- diff_exprs_old
+  tmp[which(ttests_pval_old > pvalues[k], arr.ind = TRUE)] <- 0
+  diag(tmp) <- NA
+  scores_old[[k]] <- format_network_input_scores(format_network_input(tmp))
+}
+```
+
+Load network fits.
+```{r old_fits, results="hide"}
+data(networkFits_old)
+topo_p05 <- topology(old_fits_p05)
+topo_p10 <- topology(old_fits_p10)
+topo_p15 <- topology(old_fits_p15)
+topo_p20 <- topology(old_fits_p20)
+rownames(topo_p05) <- colnames(topo_p05) <- 
+  rownames(topo_p10) <- colnames(topo_p10) <- 
+  rownames(topo_p15) <- colnames(topo_p15) <- 
+  rownames(topo_p20) <- colnames(topo_p20) <- rownames(networkInputData$ssObj)
+topo_df <- data.frame("TopNet" = as.vector(topo_i4),
+                      "p05" = as.vector(topo_p05),
+                      "p10" = as.vector(topo_p10),
+                      "p15" = as.vector(topo_p15),
+                      "p20" = as.vector(topo_p20)
+                      )
+library(GGally)
+p <- ggpairs(topo_df, 
+             columnLabels = c("TopNet", paste0("Old Model (p<",
+                                     c(0.05, 0.10, 0.15, 0.20),
+                                     ")")))
+for(i in 2:5) p[i,1] <- p[i,1] + geom_vline(xintercept=0.8)
+p
+```
 
 # Session Info
 ```{r session_info}
