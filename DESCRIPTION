@@ -1,6 +1,6 @@
 Package: crgnet
-Version: 2.0.3
-Date: 2022-04-26
+Version: 2.1.0
+Date: 2024-03-07
 Title: Gene network modeling via TopNet reveals functional dependencies between diverse tumor-critical mediator genes
 Description: This package contains the experimental data and a complete executable transcript (vignette) of the statistical analysis presented in the paper "Gene network modeling via TopNet reveals robust epistatic interactions between functionally diverse tumor critical mediator genes."
 Author: Matthew N. McCall <mccallm@gmail.com>
