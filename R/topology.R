@@ -13,7 +13,7 @@ topology <- function(fits, weighted=FALSE){
     }
   }
   if(weighted){
-    cgrph = grph / sum(sapply(fits, function(x) x$unnormalized_score))
+    cgrph = grph / sum(sapply(fits, function(x) 1/x$unnormalized_score))
   } else{
     cgrph = grph / length(fits)
   }
