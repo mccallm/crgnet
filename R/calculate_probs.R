@@ -1,4 +1,4 @@
-calculate_probs <- function(z){
+calculate_probs <- function(z, Spos_min=5, Sneg_max=-5){
 
   ## EM algorithm parameters
   tol <- 0.01 # error tolerance
@@ -12,8 +12,8 @@ calculate_probs <- function(z){
                  )
   
   ## upper and lower limits for Uniform distributions
-  Spos <- apply(z, 1, function(x) max(max(x,na.rm=T)+(max(x,na.rm=T)/sum(!is.na(x))),5))
-  Sneg <- apply(z, 1, function(x) min(min(x,na.rm=T)+(min(x,na.rm=T)/sum(!is.na(x))),-5))
+  Spos <- apply(z, 1, function(x) max(max(x,na.rm=T)+(max(x,na.rm=T)/sum(!is.na(x))),Spos_min))
+  Sneg <- apply(z, 1, function(x) min(min(x,na.rm=T)+(min(x,na.rm=T)/sum(!is.na(x))),Sneg_max))
 
   ## weights for each mixture component
   wneg <- w0 <- wpos <- matrix(nrow=nrow(z), ncol=ncol(z))
